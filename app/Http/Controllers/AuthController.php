@@ -2,28 +2,56 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Validator;
+use Tymon\JWTAuth\Facades\JWTAuth;
 
 class AuthController extends Controller
 {
-    // public function __construct()
-    // {
-    //     $this->middleware('auth:api', ['except' => ['login']]);
-    // }
 
-    /**
-     * Get a JWT via given credentials.
-     *
-     * @return \Illuminate\Http\JsonResponse
-     */
-    public function login()
+    public function login(Request $request)
     {
+        $validator = Validator::make($request->all(), [
+            'email' => 'required|email',
+            'password' => 'required|string|min:6',
+            'remember_me' => 'boolean'
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json($validator->errors(), 422);
+        }
+
         $credentials = request(['email', 'password']);
 
-        if (! $token = Auth::attempt($credentials)) {
-            return response()->json(['error' => 'Unauthorized'], 401);
+        $ttl = $request->remember_me ? 20160 : config('jwt.ttl');
+
+        auth('api')->setTTL($ttl);
+
+        if (! $token = JWTAuth::attempt($credentials)) {
+            return response()->json(['error' => 'Invalid Credentials'], 401);
         }
+
+        return $this->respondWithToken($token, $ttl);
+    }
+
+    public function register(Request $request){
+        $request->validate([
+            'name' => 'required|string|min:3|max:255',
+            'email' => 'required|email|unique:users',
+            'password' => 'required|min:6|confirmed',
+        ]);
+
+        $user = User::create([
+            'name' => $request->name,
+            'email' => $request->email,
+            'password' => bcrypt($request->password),
+        ]);
+
+        $token = auth('api')->login($user);
+
+        // $token = JWTAuth::fromUser($user);
 
         return $this->respondWithToken($token);
     }
@@ -47,6 +75,8 @@ class AuthController extends Controller
     {
         Auth::logout();
 
+        $cookie = cookie()->forget('token');
+
         return response()->json(['message' => 'Successfully logged out']);
     }
 
@@ -67,12 +97,26 @@ class AuthController extends Controller
      *
      * @return \Illuminate\Http\JsonResponse
      */
-    protected function respondWithToken($token)
+    protected function respondWithToken($token, $ttl = null)
     {
+
+        $cookie = cookie(
+            'token',
+            $token,
+            $ttl,
+            '/',
+            null,
+            false,             // Secure (Https = true)
+            true,              // HttpOnly
+            false,
+            'Lax'
+        );
+
         return response()->json([
-            'access_token' => $token,
-            'token_type' => 'bearer',
-            'expires_in' => Auth::factory()->getTTL() * 60
-        ]);
+            'status' => 'success',
+            'user' => auth('api')->user(),
+            'expires_in' => $ttl * 60,
+            'token'     => $token
+        ])->withCookie($cookie);
     }
 }
